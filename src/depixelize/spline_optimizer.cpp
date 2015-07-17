@@ -155,11 +155,11 @@ void SplineOptimizer::optimize_splines()
     const uint32_t NUM_ITERATIONS = 8;
     const uint32_t GUESSES_PER_ITERATION = 16;
     const double RADIUS = 0.125;
-
+    
     std::vector<Point> original_points(all_points.begin(), all_points.end());
-
     for (uint32_t n1 = 0; n1 < NUM_ITERATIONS; n1++) {
         for (uint32_t i = 0; i < this->num_components; i++) {
+
             Path &cur_path = this->component_paths[i];
             BSpline &cur_spline = this->component_splines[i];
             int path_len = cur_path.size();
@@ -168,29 +168,37 @@ void SplineOptimizer::optimize_splines()
                 indices.push_back(j);
             }
             std::random_shuffle(indices.begin(), indices.end());
-
+            
             for (int &idx : indices) {
                 if (!cur_path[idx].can_optimize) {
                     continue;
                 }
+                Point &old_pt = this->all_points[cur_path[idx].idx];
+                Point saved_old_pt = old_pt;
+                
+                double orig_p_energy = positional_energy(old_pt, original_points[cur_path[idx].idx]);
+                double orig_s_energy = cur_spline.curvature_energy(idx);
+                double orig_energy = orig_p_energy + orig_s_energy;
+                
+                //boost::timer part2;
                 for (uint32_t n2 = 0; n2 < GUESSES_PER_ITERATION; n2++) {
-                    Point saved_old_pt = this->all_points[cur_path[idx].idx];
-                    Point &old_pt = this->all_points[cur_path[idx].idx];
-                    double orig_p_energy = positional_energy(old_pt, original_points[cur_path[idx].idx]);
-                    double orig_s_energy = cur_spline.curvature_energy(idx);
-                    double orig_energy = orig_p_energy + orig_s_energy;
-
+                    
                     Point r = random_point(RADIUS);
                     old_pt.x += r.x;
                     old_pt.y += r.y;
-
+                    
                     double p_energy = positional_energy(old_pt, original_points[cur_path[idx].idx]);
                     double s_energy = cur_spline.curvature_energy(idx);
                     double energy = p_energy + s_energy;
-
+                    
                     if (energy >= orig_energy) {
                         old_pt.x = saved_old_pt.x;
                         old_pt.y = saved_old_pt.y;
+                    }
+                    else
+                    {
+                        orig_energy = energy;
+                        saved_old_pt = old_pt;
                     }
                 }
             }
