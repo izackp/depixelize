@@ -20,7 +20,18 @@ void SplineOptimizer::initialize()
     std::unordered_set<Edge> seen_edges;
 
     std::vector<EdgeRef> *component_edges = new std::vector<EdgeRef>[this->num_components]();
-
+    
+    boost::polygon::rectangle_data<vd_type::coordinate_type> brect_;
+    using point_type = boost::polygon::point_data<vd_type::coordinate_type>;
+    
+    for (vd_type::const_vertex_iterator it = this->vd.vertices().begin(); it != this->vd.vertices().end(); ++it) {
+        
+        double x = it->x();
+        double y = it->y();
+        point_type p(x, y);
+        set_points(brect_, p, p);
+    }
+    
     for (vd_type::const_edge_iterator it = this->vd.edges().begin(); it != this->vd.edges().end(); ++it) {
         // Cannot be visible if it isn't primary
         if (!it->is_primary()) {
@@ -28,8 +39,10 @@ void SplineOptimizer::initialize()
         }
 
         // Also assume that all primary edges are finite...
+        std::vector<point_type> clippedEdgePoints;
         if (!it->is_finite()) {
             std::cout << "WARNING: Primary, infinite edge..." << std::endl;
+            clip_infinite_edge(*it, brect_, &clippedEdgePoints);
         }
 
         uint64_t cell_idx1 = it->cell()->source_index();
@@ -37,22 +50,36 @@ void SplineOptimizer::initialize()
 
         // The two sides of the edge have different components, its visible
         if (this->components[cell_idx1] != this->components[cell_idx2]) {
-            Edge cur_edge = Edge(*it);
+            Edge *cur_edge = NULL;
+            if (clippedEdgePoints.size() > 1) {
+                Depixelize::Point p1 (clippedEdgePoints[0].x(), clippedEdgePoints[0].y());
+                Depixelize::Point p2 (clippedEdgePoints[1].x(), clippedEdgePoints[1].y());
+                cur_edge = new Edge(p1, p2);
+            }
+            else {
+                cur_edge = new Edge(*it);
+            }
             // This may not work if we have a curved and a straight edge with
             // the same endpoints, but I don't think that will happen...
-            if (seen_edges.count(cur_edge) > 0) {
+            if (seen_edges.count(*cur_edge) > 0) {
                 continue;
             }
-            seen_edges.insert(cur_edge);
+            seen_edges.insert(*cur_edge);
 
             bool is_shading_edge = shading_edge(this->colors[cell_idx1].val, this->colors[cell_idx2].val);
-
-            using point_type = boost::polygon::point_data<vd_type::coordinate_type>;
+            
             std::vector<point_type> samples;
-            point_type vertex0(it->vertex0()->x(), it->vertex0()->y());
-            point_type vertex1(it->vertex1()->x(), it->vertex1()->y());
-            samples.push_back(vertex0);
-            samples.push_back(vertex1);
+            if (clippedEdgePoints.size() > 1) {
+                samples.push_back(clippedEdgePoints[0]);
+                samples.push_back(clippedEdgePoints[1]);
+            }
+            else {
+                point_type vertex0(it->vertex0()->x(), it->vertex0()->y());
+                point_type vertex1(it->vertex1()->x(), it->vertex1()->y());
+                samples.push_back(vertex0);
+                samples.push_back(vertex1);
+            }
+            
             if (it->is_curved()) {
                 this->sample_curved_edge(*it, &samples);
             }
@@ -86,31 +113,6 @@ void SplineOptimizer::initialize()
         }
     }
 
-    // int hist[] = { 0, 0, 0, 0, 0, 0 };
-    // for (uint32_t i = 0; i < this->all_points.size(); i++) {
-    //     hist[adjacent_edges.count(i) - 1]++;
-    // }
-    // std::cout << "Number of edges with given valences" << std::endl;
-    // for (int i = 0; i < 6; i++) {
-    //     std::cout << i + 1 << ": " << hist[i] << std::endl;
-    // }
-
-    // cv::Mat im1 = cv::Mat::zeros(39 * 20, 49 * 20, CV_8UC3);
-    // for (uint32_t i = 0; i < this->all_points.size(); i++) {
-    //     auto range = adjacent_edges.equal_range(i);
-    //     for_each(
-    //         range.first,
-    //         range.second,
-    //         [&](std::unordered_multimap<uint32_t, EdgeRef>::value_type &p){
-    //             Point pt1 = this->all_points[p.second.idx1];
-    //             Point pt2 = this->all_points[p.second.idx2];
-    //             cv::line(im1, cv::Point(10 * pt1.x, 10 * pt1.y), cv::Point(10 * pt2.x, 10 * pt2.y), cv::Scalar(0, 0, 255), 1, 8);
-    //         }
-    //     );
-    // }
-    // cv::imshow("Image", im1);
-    // cv::waitKey(0);
-
     this->component_paths = new Path[this->num_components]();
     this->component_splines = new BSpline[this->num_components];
 
@@ -124,26 +126,59 @@ void SplineOptimizer::initialize()
         this->component_splines[i] = BSpline(ptr_path);
     }
 
-    // cv::Mat im2 = cv::Mat::zeros(39 * 20, 49 * 20, CV_8UC3);
-    // for (uint32_t i = 0; i < this->num_components; i++) {
-    //     Path &cur_path = this->component_paths[i];
-
-    //     for (uint32_t j = 0; j < cur_path.size(); j++) {
-    //         PointRef prev_ptref = j == 0 ? cur_path.back() : cur_path[j - 1];
-    //         PointRef cur_ptref = cur_path[j];
-    //         Point pt1 = this->all_points[prev_ptref.idx];
-    //         Point pt2 = this->all_points[cur_ptref.idx];
-
-    //         cv::line(im2, cv::Point(10 * pt1.x, 10 * pt1.y), cv::Point(10 * pt2.x, 10 * pt2.y), cv::Scalar(255.0 * i / this->num_components, 255, 192), 1, 8);
-    //     }
-    // }
-    // cv::cvtColor(im2, im2, CV_HSV2BGR);
-    // cv::imshow("Image", im2);
-    // cv::waitKey(0);
-
     delete[] component_edges;
 }
-
+    
+void SplineOptimizer::clip_infinite_edge(const vd_type::edge_type& edge, boost::polygon::rectangle_data<vd_type::coordinate_type> brect_, std::vector<boost::polygon::point_data<vd_type::coordinate_type>>* clipped_edge) {
+    const vd_type::cell_type& cell1 = *edge.cell();
+    const vd_type::cell_type& cell2 = *edge.twin()->cell();
+    
+    using point_type = boost::polygon::point_data<vd_type::coordinate_type>;
+    point_type origin, direction;
+    // Infinite edges could not be created by two segment sites.
+    if (cell1.contains_point() && cell2.contains_point()) {
+        point_type p1 = retrieve_point(cell1);
+        point_type p2 = retrieve_point(cell2);
+        origin.x((p1.x() + p2.x()) * 0.5);
+        origin.y((p1.y() + p2.y()) * 0.5);
+        direction.x(p1.y() - p2.y());
+        direction.y(p2.x() - p1.x());
+    } else {
+        origin = cell1.contains_segment() ?
+        retrieve_point(cell2) :
+        retrieve_point(cell1);
+        boost::polygon::segment_data<int> segment = cell1.contains_segment() ? retrieve_segment(cell1) : retrieve_segment(cell2);
+        vd_type::coordinate_type dx = high(segment).x() - low(segment).x();
+        vd_type::coordinate_type dy = high(segment).y() - low(segment).y();
+        if ((low(segment) == origin) ^ cell1.contains_point()) {
+            direction.x(dy);
+            direction.y(-dx);
+        } else {
+            direction.x(-dy);
+            direction.y(dx);
+        }
+    }
+    vd_type::coordinate_type side = xh(brect_) - xl(brect_);
+    vd_type::coordinate_type koef =
+    side / (std::max)(fabs(direction.x()), fabs(direction.y()));
+    if (edge.vertex0() == NULL) {
+        clipped_edge->push_back(point_type(
+                                           origin.x() - direction.x() * koef,
+                                           origin.y() - direction.y() * koef));
+    } else {
+        clipped_edge->push_back(
+                                point_type(edge.vertex0()->x(), edge.vertex0()->y()));
+    }
+    if (edge.vertex1() == NULL) {
+        clipped_edge->push_back(point_type(
+                                           origin.x() + direction.x() * koef,
+                                           origin.y() + direction.y() * koef));
+    } else {
+        clipped_edge->push_back(
+                                point_type(edge.vertex1()->x(), edge.vertex1()->y()));
+    }
+}
+    
 static inline double positional_energy(Point guess, Point initial)
 {
     using std::pow;
